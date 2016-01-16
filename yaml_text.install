@@ -1,0 +1,59 @@
+<?php
+
+
+function yaml_text_requirements($phase) {
+
+  $requirements = array();
+
+  if ($phase == 'runtime') {
+    $description = NULL;
+    if (extension_loaded('yaml')) {
+      $value = t('Enabled');
+      $severity = REQUIREMENT_OK;
+    }
+    else {
+      $value = t('Not enabled');
+      $severity = REQUIREMENT_ERROR;
+      $description = t('YAML PHP library is missing. Please install the <a href="http://pecl.php.net/package/yaml">yaml PECL library</a>.');
+    }
+    $requirements['yaml'] = array(
+      'title' => t('YAML support'),
+      'value' => $value,
+      'severity' => $severity,
+      'description' => $description,
+    );
+    $description = NULL;
+    if (ini_get('yaml.decode_php')) {
+      $value = t('Not secure');
+      $severity = REQUIREMENT_WARNING;
+      $description = t('You have <em>yaml.decode_php</em> directive set to 1, which means that serialized PHP obejects will be automatically unserialized, which can not be considered as a secure setup.');
+    }
+    else {
+      $value = t('Secure');
+      $severity = REQUIREMENT_OK;
+    }
+    $requirements['yaml_secure'] = array(
+      'title' => t('YAML security'),
+      'value' => $value,
+      'description' => $description,
+      'severity' => $severity,
+     );
+  }
+
+  return $requirements;
+}
+
+/**
+ * Implements hook_field_schema().
+ */
+function yaml_text_field_schema($field) {
+  return array(
+    'columns' => array(
+      'value' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+    ),
+  );
+}

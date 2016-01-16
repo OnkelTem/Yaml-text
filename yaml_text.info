@@ -1,0 +1,6 @@
+name = YAML text
+core = 7.x
+description = Blah blah
+package = Other
+
+files[] = yaml_text.inc

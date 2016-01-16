@@ -1,0 +1,295 @@
+<?php
+
+module_load_include('inc', 'yaml_text', 'yaml_text.field');
+//module_load_include('inc', 'yaml_text', 'yaml_text.default.schema');
+
+function yaml_text_assets($type) {
+  $assets = &drupal_static(__FUNCTION__);
+  if (!isset($assets)) {
+    $assets = yaml_text_default_assets();
+    foreach(array('schema', 'formatter') as $asset) {
+      $hook = 'yaml_text_' . $asset . '_info';
+      foreach (module_implements($hook) as $module) {
+        $result = module_invoke($module, $hook);
+        foreach($result as $asset_name => $info) {
+          $result[$asset_name]['module'] = $module;
+        }
+        $assets[$asset] = array_merge($result, $assets[$asset]);
+      }
+    }
+  }
+  return $assets[$type];
+}
+
+function yaml_text_load_schema($schema) {
+  $loaded = &drupal_static(__FUNCTION__);
+  $schemas_list = yaml_text_assets('schema');
+  if (!isset($schemas_list[$schema])) {
+    drupal_set_message(t('YAML schema <em>@schema</em> not found.', array('@schema' => $schema)), 'error');
+    return FALSE;
+  }
+  if (isset($loaded[$schema]) && $loaded[$schema]) {
+    return $loaded[$schema];
+  }
+  $schema_info = $schemas_list[$schema];
+    //module_load_include('inc', $schema_info['module'], isset($schema_info['file']) ? $schema_info['file'] : NULL);
+  if (!class_exists($schema_info['class'])) {
+    drupal_set_message(t('YAML schema class <em>@class</em> not found.', array('@class' => $schema_info['class'])), 'error');
+    return FALSE;
+  }
+  $loaded[$schema] = new $schema_info['class']();
+  return $loaded[$schema];
+}
+
+function yaml_text_invoke_formatter($formatter, $data, $context) {
+  $formatters = yaml_text_assets('formatter');
+  if (!isset($formatters[$formatter])) {
+    drupal_set_message(t('YAML formatter <em>@formatter</em> not found.', array('@formatter' => $formatter)), 'error');
+    return FALSE;
+  }
+  $formatter_info = $formatters[$formatter];
+  if (!isset($formatter_info['function']) || !function_exists($formatter_info['function'])) {
+    drupal_set_message(t('YAML formatter <em>@formatter</em> can not be loaded.', array('@formatter' => $formatter)), 'error');
+    return FALSE;
+  }
+  $function = $formatter_info['function'];
+  return $function($data, $context);
+}
+
+function yaml_text_formatter_options($key = NULL, $schema = NULL) {
+  $options = array();
+  foreach(yaml_text_assets('formatter') as $formatter => $info) {
+    if (!$schema || !$info['schemas'] || count($info['schemas']) == 0 || in_array($schema, $info['schemas'])) {
+      $options[$formatter] = $info['title'];
+    }
+  }
+  return $key ? $options[$key] : $options;
+}
+
+function yaml_text_schema_options($key = NULL) {
+  $options = array();
+  foreach(yaml_text_assets('schema') as $schema => $info) {
+    $options[$schema] = $info['title'];
+  }
+  return $key ? $options[$key] : $options;
+}
+
+/**
+ * Implements hook_field_attach_view_alter().
+ */
+function yaml_text_field_attach_view_alter(&$output, $context) {
+  // My comment
+  $placeholders = array();
+  $elements = array();
+  foreach (element_children($output) as $field_name) {
+    $element = &$output[$field_name];
+    $elements[$field_name] = &$element;
+    if ($element['#field_type'] == 'yaml_text' && $element['#formatter'] == 'yaml') {
+      foreach (element_children($element) as $delta) {
+        if ($element[$delta]['#theme'] == 'yaml_html') {
+          _yaml_text_get_placeholders($element[$delta]['#data'], $placeholders);
+        }
+      }
+    }
+  }
+  if (!count($placeholders)) {
+    return;
+  }
+  // Replace placehodlers
+  foreach ($placeholders as $placeholder) {
+    if (isset($elements[$placeholder->field_name])) {
+      $placeholder->value = $elements[$placeholder->field_name];
+      // Hide element
+      $elements[$placeholder->field_name]['#printed'] = TRUE;
+    }
+  }
+}
+
+/**
+ * Defines default yaml schemas and formatters
+ */
+function yaml_text_default_assets() {
+  return array(
+    'schema' => array(
+      'core' => array(
+        'title' => t('Core'),
+        'description' => t('Builds PHP array using default set of tags.'),
+        'class' => 'YTSchemaCore',
+      ),
+      'html' => array(
+        'title' => t('YamlHTML'),
+        'description' => t('Builds HTML-like tree'),
+        'class' => 'YTSchemaHTML',
+      ),
+    ),
+    'formatter' => array(
+      'passthrough' => array(
+        'title' => t('Passthrough'),
+        'description' => t(''),
+        'schemas' => array(),
+        'function' => 'yaml_text_formatter_passthrough',
+      ),
+      'js' => array(
+        'title' => t('JS settings'),
+        'description' => t('Pushes array to JS settings.'),
+        'schemas' => array('php'),
+        'function' => 'yaml_text_formatter_js',
+      ),
+      'html' => array(
+        'title' => t('HTML'),
+        'description' => t('Renders HTML'),
+        'schemas' => array('html'),
+        'function' => 'yaml_text_formatter_html',
+      ),
+    ),
+  );
+}
+
+function yaml_text_formatter_passthrough($data, $context) {
+  return array(
+    '#theme' => 'yaml_passthrough',
+    '#context' => $context,
+    '#data' => $data
+  );
+}
+
+function yaml_text_formatter_js($data, $context) {
+  $wrapper = entity_metadata_wrapper($context['entity_type'], $context['entity']);
+  drupal_add_js(array(
+    'yaml_text' => array(
+      $context['entity_type'] => array(
+        $wrapper->getIdentifier() => array(
+          $context['field']['field_name'] => array(
+            $context['delta'] => $data))))), 'setting');
+}
+
+function yaml_text_formatter_html($data, $context) {
+  return array(
+    '#theme' => 'yaml_html',
+    '#context' => $context,
+    '#data' => $data
+  );
+}
+
+/**
+ * Implements hook_theme().
+ */
+function yaml_text_theme() {
+  return array(
+    'yaml_passthrough' => array(
+      'variables' => array('data' => NULL, 'context' => NULL),
+      'template' => 'yaml_text'
+    ),
+    'yaml_html' => array(
+        'variables' => array('data' => NULL, 'context' => NULL),
+    ),
+  );
+}
+
+function theme_yaml_html($vars) {
+  module_load_include('inc', 'yaml_text');
+  $formatter = new YTHTMLFormatter($vars['data']);
+  return $formatter->render();
+//   return array(
+//     '#markup' => $formatter->render(),
+//   );
+}
+
+/**
+ * Provides theme suggestions for yaml_text
+ */
+function template_preprocess_yaml_text(&$vars) {
+  $_f = $vars['context']['field']['field_name'];
+  $_t = $vars['context']['entity_type'];
+  $_p = 'yaml_text__';
+  $wrapper = entity_metadata_wrapper($vars['context']['entity_type'], $vars['context']['entity']);
+  $vars['theme_hook_suggestions'][] = $_p . $_t;
+  $vars['theme_hook_suggestions'][] = $_p . $_f;
+  $vars['theme_hook_suggestions'][] = $_p . $_t . '__' . $_f;
+  $vars['theme_hook_suggestions'][] = $_p . $_t . '__' . $wrapper->getIdentifier() . '__' . $_f;
+  $vars['theme_hook_suggestions'][] = $_p . $_t . '__' . $wrapper->getBundle() . '__' . $_f;
+}
+
+/**
+ * Implements hook_element_info().
+ */
+function yaml_text_element_info() {
+  return array(
+    'yaml_text' => array(
+      '#input' => TRUE,
+      '#process' => array('yaml_text_element_process'),
+    ),
+  );
+}
+
+/**
+ * Processes the yaml type element.
+ *
+ * Currently it doesn't do anything special and represents a simple textarea
+ *
+ */
+function yaml_text_element_process($element, $form_state, $complete_form) {
+  // Simple counter of yt field widgets
+  static $yt_element_id = 0;
+  $yt_element_id++;
+  $instance = field_widget_instance($element, $form_state);
+  $field = field_widget_field($element, $form_state);
+  $settings = $instance['settings'];
+  $widget_settings = $instance['widget']['settings'];
+  $element['value'] = array(
+    '#type' => 'textarea',
+    '#title' => $instance['label'] . ' <small>(' . t('Using schema: @schema', array('@schema' => yaml_text_schema_options($field['settings']['schema']))) . ')</small>',
+    '#rows' => $instance['widget']['settings']['rows'],
+    '#required' => $element['#required'],
+    '#default_value' => isset($element['#value']['value']) ? $element['#value']['value'] : NULL,
+  );
+
+  if ($widget_settings['source_editor']) {
+    $element['value']['#attached'] = array('js' => _yaml_text_source_editor_js($widget_settings['source_editor_settings'], $yt_element_id));
+    $element['value']['#attributes'] = array('x-source-editor' => 'ytElId' . $yt_element_id);
+  }
+
+  // $element['token_help'] = array(
+  //   '#theme' => 'token_tree_link',
+  //   '#token_types' => array('node'),
+  // );
+
+  return $element;
+}
+
+function _yaml_text_source_editor_js($settings, $yt_element_id = 0, $is_admin = FALSE) {
+  $js = array(
+    array('data' => array('yamlText' => array('ytElId' . $yt_element_id => array(
+      'sourceEditorMode' => $settings['mode'],
+      'sourceEditorTheme' => $settings['theme'],
+      'sourceEditorFontsize' => $settings['fontsize']))),
+      'type' => 'setting'),
+    // 'https://cdn.jsdelivr.net/g/ace@1.2.2(min/ace.js+min/theme-monokai.js+min/mode-yaml.js)' => array('type' => 'external'),
+    'sites/all/libraries/ace-builds/src/ace.js' => array('type' => 'file', 'weight' => 1),
+    //'sites/all/libraries/ace-builds/src/ext-language_tools.js' => array('type' => 'file', 'weight' => 2),
+    // 'sites/all/libraries/ace-builds/src/theme-monokai.js' => array('type' => 'file'),
+    // 'sites/all/libraries/ace-builds/src/mode-yaml.js' => array('type' => 'file'),
+    drupal_get_path('module', 'yaml_text') . '/yaml_text_source_edit.js' => array('type' => 'file', 'weight' => 5),
+  );
+  if ($is_admin) {
+    $js['sites/all/libraries/ace-builds/src/ext-modelist.js'] = array('type' => 'file', 'weight' => 3);
+    $js['sites/all/libraries/ace-builds/src/ext-themelist.js'] = array('type' => 'file', 'weight' => 4);
+    $js[0]['data']['yamlText']['sourceEditorAdmin'] = TRUE;
+  }
+  return $js;
+}
+
+/**
+ * Implements hook_help().
+ */
+// function yaml_text_help($path, $arg) {
+//   $asd = 1;
+//   switch ($path) {
+//     case 'admin/help#yaml_text':
+//       return '<p>' . t('This is a help text') . '</p>';
+//     case 'admin/help/yaml_text':
+//       return '<p>' . t('This is a help text 222222222') . '</p>';
+//     case 'node/%/edit':
+//       return '<p>' . t('This is a node help text') . '</p>';
+//   }
+// }
